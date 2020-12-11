@@ -9,7 +9,11 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 #include <libcflat.h>
+#include <asm/processor.h>
+#include <asm/ptrace.h>
 #include <asm/setup.h>
+#include <asm/sysreg.h>
+#include <asm/thread_info.h>
 #undef ALIGN
 #include <efi.h>
 #include <efilib.h>
@@ -323,6 +327,7 @@ static uint64_t efi_set_mem_regions(UINTN *MapKey)
 	return freemem_start;
 }
 
+void efi_start(void *fdt, uint64_t freemem_start);
 EFI_STATUS efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab);
 
 EFI_STATUS efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
@@ -330,8 +335,8 @@ EFI_STATUS efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
 	EFI_STATUS Status;
 	UINTN MapKey;
 	uint64_t freemem_start;
+	unsigned long el, sctlr, hcr;
 	void *fdt;
-	int ret;
 
 	InitializeLib(Image, SysTab);
 
@@ -341,12 +346,39 @@ EFI_STATUS efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
 
 	freemem_start = efi_set_mem_regions(&MapKey);
 
+	Print(L"\n");
+	Print(L"Load address  = 0x%lx\n", (unsigned long)&_text);
+	Print(L"freemem_start = 0x%lx\n", freemem_start);
+
 	Status = uefi_call_wrapper(BS->ExitBootServices, 2, Image, MapKey);
 	ASSERT(Status == EFI_SUCCESS);
 
-	setup(fdt, freemem_start);
-	ret = main(__argc, __argv, __environ);
-	exit(ret);
+	printf("\nExitBootServices\n\n");
+
+	el = current_level();
+	printf("EL = %lu\n", el);
+
+	if (el == CurrentEL_EL2) {
+		asm volatile("mrs %0, sctlr_el2" : "=r" (sctlr));
+		asm volatile("mrs %0, hcr_el2" : "=r" (hcr));
+		printf("hcr_el2   = 0x%lx\n", hcr);
+		printf("sctlr_el2 = 0x%lx\n", sctlr);
+		asm volatile("mrs %0, sctlr_el1" : "=r" (sctlr));
+		printf("sctlr_el1 = 0x%lx\n", sctlr);
+	} else {
+		asm volatile("mrs %0, sctlr_el1" : "=r" (sctlr));
+		printf("sctlr_el1 = 0x%lx\n", sctlr);
+	}
+
+	printf("SCTLR_EL2_RES1 = 0x%016lx\n", SCTLR_EL2_RES1);
+	printf("SCTLR_EL1_RES1 = 0x%016lx\n", SCTLR_EL1_RES1);
+	printf("CPTR_EL2_RES1  = 0x%016lx\n", CPTR_EL2_RES1);
+	printf("HCR_NVHE_FLAGS = 0x%016lx\n", HCR_HOST_NVHE_FLAGS);
+	printf("INIT_PSTATE_EL = 0x%08x\n", INIT_PSTATE_EL1);
+
+	/* Reserve memory for the  stack */
+	freemem_start += THREAD_SIZE;
+	efi_start(fdt, freemem_start);
 
 	/* Unreachable */
 	return EFI_UNSUPPORTED;

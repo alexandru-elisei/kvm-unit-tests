@@ -12,6 +12,7 @@
 #include <asm/processor.h>
 #include <asm/page.h>
 #include <asm/pgtable-hwdef.h>
+#include <asm/sysreg.h>
 
 #ifndef TARGET_EFI
 .section .init
@@ -85,6 +86,133 @@ start:
 
 .text
 
+.globl efi_start
+efi_start:
+	mrs	x4, CurrentEL
+	cmp	x4, CurrentEL_EL2
+	b.ne	1f
+
+	bl	drop_to_el1
+
+	mov	w10, #0x34	// print 4
+	strb	w10, [x9]
+
+	b	2f
+1:
+	/* Disable MMU */
+	ldr	x4, =SCTLR_EL1_RES1
+	msr	sctlr_el1, x4
+	isb
+	/*
+	 * Remove cached values for the bits that are permitted to be cached
+ 	 * in a TLB
+	 */
+	tlbi	vmalle1
+	isb
+
+	/* set up stack */
+	mov	x4, #1
+	msr	spsel, x4
+
+2:
+	mov	w10, #0x34	// print 4
+	strb	w10, [x9]
+
+	sub	sp, x1, 16
+
+	/* enable FP/ASIMD */
+	mov	x4, #(3 << 20)
+	msr	cpacr_el1, x4
+
+	bl	exceptions_init
+
+	/*
+	 * x0 - dtb address
+	 * x1 - freemem_start
+	 */
+	bl	setup
+
+	/* run the test */
+	adrp	x0, __argc
+	/*
+	 * __argc is defined as an int. Use a 32-bit register as the destination
+	 * to prevent "relocation truncated to fit" errors.
+	 */
+	ldr	w0, [x0, :lo12:__argc]
+	adrp	x1, __argv
+	add	x1, x1, :lo12:__argv
+	adrp	x2, __environ
+	add	x2, x2, :lo12:__environ
+	bl	main
+	bl	exit
+	b	halt
+
+drop_to_el1:
+	ldr	x9, =0xe1010000
+	mov	w10, #0x31	// print 1
+	strb	w10, [x9]
+
+	ldr	x4, =SCTLR_EL2_RES1
+	mrs	x4, sctlr_el2
+	msr	sctlr_el2, x4
+	isb
+
+	ldr	x4, =HCR_HOST_NVHE_FLAGS
+	msr	hcr_el2, x4
+	isb
+
+	ldr	x4, =SCTLR_EL1_RES1
+	msr	sctlr_el1, x4
+
+	mrs	x4, cnthctl_el2
+	/* Enable EL1 physical timers. */
+	orr	x4, x4, #3
+	msr	cnthctl_el2, x4
+	/* Clear the timer virtual offset. */
+	msr	cntvoff_el2, xzr
+
+	mrs	x4,  id_aa64dfr0_el1
+	sbfx	x5, x4, #8, #4
+	cmp	x5, #1
+	b.lt	1f
+	mrs	x4, pmcr_el0
+	ubfx	x4, x4, #11, #5
+	/* Disable traps, allow access to all PMU counters */
+	msr	mdcr_el2, x4
+
+1:
+	mrs	x4, id_aa64pfr0_el1
+	ubfx	x4, x4, #24, #4
+	cbz	x4, 2f
+
+	/* Allow access to the GICv3 CPU interface */
+	mrs_s	x4, SYS_ICC_SRE_EL2
+	orr	x4, x4, #(1 << 0)
+	orr	x4, x4, #(1 << 3)
+	msr_s	SYS_ICC_SRE_EL2, x4
+	isb
+
+2:
+	mrs	x4, midr_el1
+	msr	vpidr_el2, x4
+	mrs	x4, mpidr_el1
+	msr	vmpidr_el2, x4
+
+	ldr	x4, =CPTR_EL2_RES1
+	msr	cptr_el2, x4
+
+	ldr	x4, =INIT_PSTATE_EL1
+	msr	spsr_el2, x4
+
+	msr	vttbr_el2, xzr
+	msr	vbar_el2, xzr
+	msr	elr_el2, lr
+
+	mov	w10, #0x32	// print 2
+	strb	w10, [x9]
+
+	eret
+
 .globl get_mmu_off
 get_mmu_off:
 	adrp	x0, auxinfo
@@ -94,6 +222,12 @@ get_mmu_off:
 
 .globl secondary_entry
 secondary_entry:
+	mrs	x0, CurrentEL
+	cmp	x0, CurrentEL_EL2
+	b.ne	1f
+	bl	drop_to_el1
+
+1:
 	/* Enable FP/ASIMD */
 	mov	x0, #(3 << 20)
 	msr	cpacr_el1, x0
@@ -103,12 +237,12 @@ secondary_entry:
 
 	/* enable the MMU unless requested off */
 	bl	get_mmu_off
-	cbnz	x0, 1f
+	cbnz	x0, 2f
 	adrp	x0, mmu_idmap
 	ldr	x0, [x0, :lo12:mmu_idmap]
 	bl	asm_mmu_enable
 
-1:
+2:
 	/* set the stack */
 	adrp	x0, secondary_data
 	ldr	x0, [x0, :lo12:secondary_data]
@@ -227,6 +361,23 @@ asm_mmu_disable:
 	dcache_by_line_op civac, sy, x0, x1, x2, x3
 	isb
 
+	ret
+
+/*
+ * asm_inval_dcache
+ *   Inputs:
+ *     x0 the first address in the memory range to be invalidated
+ *     x1 the last address in the memory range to be invalidated
+ *   Outputs: none
+ *
+ * The function is only useful when called with the MMU disabled, as otherwise
+ * the PE is free to speculate loads at any time, from any mapped address.
+ *
+ * dcache_line_size must be computed prior to calling this function.
+ */
+.globl asm_inval_dcache
+asm_inval_dcache:
+	dcache_by_line_op ivac, sy, x0, x1, x9, x10
 	ret
 
 /*

@@ -175,6 +175,7 @@ static void mem_regions_init(void)
 	mem_regions_add_extra(i);
 }
 
+void asm_inval_dcache(phys_addr_t start, phys_addr_t end);
 static void mem_init(phys_addr_t freemem_start)
 {
 	phys_addr_t base, top;
@@ -208,6 +209,8 @@ static void mem_init(phys_addr_t freemem_start)
 
 	__phys_offset = mem.start;	/* PHYS_OFFSET */
 	__phys_end = mem.end;		/* PHYS_END */
+	if (target_efi())
+		asm_inval_dcache(__phys_offset, __phys_end);
 
 	phys_alloc_init(freemem_start, freemem->end - freemem_start);
 	phys_alloc_set_minimum_alignment(SMP_CACHE_BYTES);
@@ -267,13 +270,15 @@ void setup(const void *fdt, phys_addr_t freemem_start)
 	u32 fdt_size;
 	int ret;
 
+	puts("Entering setup()\n");
+
 	assert(sizeof(long) == 8 || freemem_start < (3ul << 30));
 	freemem = (void *)(uintptr_t)freemem_start;
 
-	if (target_efi()) {
-		exceptions_init();
+	if (target_efi())
 		printf("Load address: %" PRIxPTR "\n", text);
-	}
+
+	memset(current_thread_info(), 0, sizeof(struct thread_info));
 
 	/* Move the FDT to the base of free memory */
 	fdt_size = fdt_totalsize(fdt);
@@ -300,18 +305,9 @@ void setup(const void *fdt, phys_addr_t freemem_start)
 	 */
 	dcache_line_size = 1 << (CTR_DMINLINE(get_ctr()) + 2);
 
-	if (target_efi()) {
-		mem_init(freemem_start);
-		/*
-		 * dcache_line_size must be set and mem_init must be called before
-		 * asm_mmu_disable, because we need __phys_offset, __phys_end, and
-		 * dcache_line_size set to clear and invalidate all memory.
-		 */
-		asm_mmu_disable();
-	} else {
+	if (!target_efi())
 		mem_regions_init();
-		mem_init(freemem_start);
-	}
+	mem_init(freemem_start);
 
 	psci_set_conduit();
 	cpu_init();
