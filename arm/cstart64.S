@@ -55,7 +55,6 @@ start:
 	/* set up stack */
 	mov	x4, #1
 	msr	spsel, x4
-	isb
 	adrp    x4, stackptr
 	add     sp, x4, :lo12:stackptr
 
