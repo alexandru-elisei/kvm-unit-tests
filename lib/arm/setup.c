@@ -47,8 +47,6 @@ static struct mem_region __initial_mem_regions[MAX_DT_MEM_REGIONS + NR_EXTRA_MEM
 struct mem_region *mem_regions = __initial_mem_regions;
 phys_addr_t __phys_offset, __phys_end;
 
-unsigned long dcache_line_size;
-
 extern void exceptions_init(void);
 extern void asm_mmu_disable(void);
 
@@ -294,19 +292,8 @@ void setup(const void *fdt, phys_addr_t freemem_start)
 
 	freemem_start = PAGE_ALIGN((uintptr_t)freemem);
 
-	/*
-	 * DminLine is log2 of the number of words in the smallest cache line;
-	 * a word is 4 bytes.
-	 */
-	dcache_line_size = 1 << (CTR_DMINLINE(get_ctr()) + 2);
-
 	if (target_efi()) {
 		mem_init(freemem_start);
-		/*
-		 * dcache_line_size must be set and mem_init must be called before
-		 * asm_mmu_disable, because we need __phys_offset, __phys_end, and
-		 * dcache_line_size set to clear and invalidate all memory.
-		 */
 		asm_mmu_disable();
 	} else {
 		mem_regions_init();
