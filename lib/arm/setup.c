@@ -30,9 +30,6 @@
 
 #include "io.h"
 
-#define MAX_DT_MEM_REGIONS	16
-#define NR_EXTRA_MEM_REGIONS	16
-
 extern unsigned long _text, _etext;
 
 struct timer_state __timer_state;
@@ -43,7 +40,7 @@ u32 initrd_size;
 u64 cpus[NR_CPUS] = { [0 ... NR_CPUS-1] = (u64)~0 };
 int nr_cpus;
 
-static struct mem_region __initial_mem_regions[MAX_DT_MEM_REGIONS + NR_EXTRA_MEM_REGIONS];
+static struct mem_region __initial_mem_regions[NR_MEM_REGIONS];
 struct mem_region *mem_regions = __initial_mem_regions;
 phys_addr_t __phys_offset, __phys_end;
 
@@ -156,6 +153,7 @@ static void mem_regions_add_extra(int nr_regions)
 #endif
 }
 
+#define MAX_DT_MEM_REGIONS	(NR_MEM_REGIONS >> 1)
 static void mem_regions_init(void)
 {
 	struct dt_pbus_reg regs[MAX_DT_MEM_REGIONS];

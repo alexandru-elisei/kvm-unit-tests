@@ -23,6 +23,8 @@ struct mem_region {
 	phys_addr_t end;
 	unsigned int flags;
 };
+/* Arbitrary number of mem_region entries */
+#define NR_MEM_REGIONS		64
 extern struct mem_region *mem_regions;
 extern phys_addr_t __phys_offset, __phys_end;
 
