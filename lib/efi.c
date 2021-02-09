@@ -260,16 +260,9 @@ static uint64_t efi_set_mem_regions(UINTN *MapKey)
 	int i;
 
 	buffer = (char *)LibMemoryMap(&NoEntries, MapKey, &DescriptorSize, &DescriptorVersion);
-	ASSERT(DescriptorVersion == 1);
 
-	mem_regions = AllocateZeroPool(sizeof(struct mem_region) * (NoEntries + EXTRA_MEM_REGIONS));
-
-	/*
-	 * Need to get the memory map again after the mem_regions allocation
-	 * to get the new MapKey.
-	 */
-	FreePool(buffer);
-	buffer = (char *)LibMemoryMap(&NoEntries, MapKey, &DescriptorSize, &DescriptorVersion);
+	/* We split the EfiLoaderCode into two regions: text and code. */
+	ASSERT(NoEntries < NR_MEM_REGIONS - 1);
 
 	for (i = 0, r = &mem_regions[0]; i < NoEntries * DescriptorSize; i += DescriptorSize, ++r) {
 		EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)&buffer[i];
