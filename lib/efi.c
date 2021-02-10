@@ -9,7 +9,9 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 #include <libcflat.h>
+#include <asm/page.h>
 #include <asm/setup.h>
+#include <asm/thread_info.h>
 #undef ALIGN
 #include <efi.h>
 #include <efilib.h>
@@ -23,7 +25,8 @@ extern char *__argv[100];
 extern char *__environ[200];
 extern struct mem_region *mem_regions;
 
-extern int main(int argc, char **argv, char **envp);
+extern void asm_clean_dcache_area_poc(unsigned long addr, unsigned long size);
+extern void efi_start(void *fdt, unsigned long freemem_start);
 
 static EFI_GUID efi_var_guid = VAR_GUID;
 
@@ -189,7 +192,7 @@ static void efi_load_image(EFI_LOADED_IMAGE *LoadedImage, void **data,
 	*datasize = BufferSize;
 }
 
-static void *efi_get_fdt(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
+static void *efi_get_fdt(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab, int *fdtsize)
 {
 	EFI_GUID LoadedImageProtocol = LOADED_IMAGE_PROTOCOL;
 	EFI_LOADED_IMAGE *LoadedImage;
@@ -197,7 +200,6 @@ static void *efi_get_fdt(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
 	CHAR16 Name[256], *Val, *PathName = NULL;
 	UINTN ValSize;
 	void *fdt = NULL;
-	int fdtsize;
 
 	StrCpy(Name, L"DTB_BASENAME");
 	Val = LibGetVariableAndSize(Name, &efi_var_guid, &ValSize);
@@ -218,7 +220,7 @@ static void *efi_get_fdt(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
 	efi_generate_path(LoadedImage, efi_dtb_basename, &PathName);
 
 	/* Load the dtb */
-	efi_load_image(LoadedImage, &fdt, &fdtsize, PathName);
+	efi_load_image(LoadedImage, &fdt, fdtsize, PathName);
 
 	FreePool(PathName);
 
@@ -323,23 +325,38 @@ EFI_STATUS efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *SysTab)
 	EFI_STATUS Status;
 	UINTN MapKey;
 	uint64_t freemem_start;
+	uint64_t text = (uint64_t)&_text, etext = (uint64_t)&_etext;
+	uint64_t data = (uint64_t)&_data, edata = (uint64_t)&_edata;
 	void *fdt;
-	int ret;
+	int fdtsize;
 
 	InitializeLib(Image, SysTab);
 
 	efi_setup_argv(Image, SysTab);
 
-	fdt = efi_get_fdt(Image, SysTab);
+	fdt = efi_get_fdt(Image, SysTab, &fdtsize);
 
 	freemem_start = efi_set_mem_regions(&MapKey);
 
 	Status = uefi_call_wrapper(BS->ExitBootServices, 2, Image, MapKey);
 	ASSERT(Status == EFI_SUCCESS);
 
-	setup(fdt, freemem_start);
-	ret = main(__argc, __argv, __environ);
-	exit(ret);
+	/*
+	 * setup() will move the FDT with the MMU off, flush the file to main
+	 * memory.
+	 */
+	asm_clean_dcache_area_poc((uint64_t)fdt, fdtsize);
+	/*
+	 * Clean the copied image to PoC so we can fetch the correct values once
+	 * the MMU is turned off. Do it here because we've modified mem_regions.
+	 */
+	asm_clean_dcache_area_poc(text, etext - text);
+	asm_clean_dcache_area_poc(data, edata - data);
+
+	freemem_start += THREAD_SIZE;
+	freemem_start = __ALIGN(freemem_start, PAGE_SIZE);
+
+	efi_start(fdt, freemem_start);
 
 	/* Unreachable */
 	return EFI_UNSUPPORTED;

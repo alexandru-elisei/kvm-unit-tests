@@ -22,6 +22,8 @@
 
 pgd_t *mmu_idmap;
 
+extern void asm_inval_dcache_area_poc(unsigned long addr, unsigned long size);
+
 /* CPU 0 starts with disabled MMU */
 static cpumask_t mmu_disabled_cpumask = { {1} };
 unsigned int mmu_disabled_cpu_count = 1;
@@ -152,6 +154,40 @@ void mmu_set_range_sect(pgd_t *pgtable, uintptr_t virt_offset,
 		flush_tlb_page(vaddr);
 	}
 }
+extern unsigned long _data, _edata;
+
+static void setup_cache(void)
+{
+	unsigned long data = (unsigned long)&_data;
+	unsigned long edata = (unsigned long)&_edata;
+	struct mem_region *r;
+
+	/*
+	 * We need to invalidate the addresses for all the memory that we've
+	 * touched with the MMU off. This is to prevent reading stale values
+	 * from the cache when we toggle the MMU on.
+	 *
+	 * We need to invalidate:
+	 *
+	 * - The data section, where static and global variables are stored.
+	 * - The stack.
+	 * - The fdt.
+	 * - The initrd, if present.
+	 * - The translation tables.
+	 *
+	 * Because the translation tables have been allocated using the memory
+	 * allocator, we have no choice but to invalidate the entire primary
+	 * memory region.
+	 */
+
+	asm_inval_dcache_area_poc(data, edata - data);
+
+	for (r = mem_regions; r->end; r++)
+		if (r->flags & MR_F_PRIMARY)
+			break;
+	assert(r->end);
+	asm_inval_dcache_area_poc(r->start, r->end - r->start);
+}
 
 void *setup_mmu(phys_addr_t phys_end)
 {
@@ -186,6 +222,9 @@ void *setup_mmu(phys_addr_t phys_end)
 					   __pgprot(PTE_WBWA | PTE_USER));
 		}
 	}
+
+	if (target_efi())
+		setup_cache();
 
 	mmu_enable(mmu_idmap);
 	return mmu_idmap;

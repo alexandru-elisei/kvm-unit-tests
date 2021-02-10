@@ -180,6 +180,7 @@ static void mem_init(phys_addr_t freemem_start)
 
 	freemem = mem_region_find(freemem_start);
 	assert(freemem && !(freemem->flags & (MR_F_IO | MR_F_CODE)));
+	freemem->flags |= MR_F_PRIMARY;
 
 	for (r = mem_regions; r->end; ++r) {
 		if (r->flags & MR_F_IO) {
@@ -266,10 +267,8 @@ void setup(const void *fdt, phys_addr_t freemem_start)
 	assert(sizeof(long) == 8 || freemem_start < (3ul << 30));
 	freemem = (void *)(uintptr_t)freemem_start;
 
-	if (target_efi()) {
-		exceptions_init();
+	if (target_efi())
 		printf("Load address: %" PRIxPTR "\n", text);
-	}
 
 	/* Move the FDT to the base of free memory */
 	fdt_size = fdt_totalsize(fdt);
@@ -290,13 +289,9 @@ void setup(const void *fdt, phys_addr_t freemem_start)
 
 	freemem_start = PAGE_ALIGN((uintptr_t)freemem);
 
-	if (target_efi()) {
-		mem_init(freemem_start);
-		asm_mmu_disable();
-	} else {
+	if (!target_efi())
 		mem_regions_init();
-		mem_init(freemem_start);
-	}
+	mem_init(freemem_start);
 
 	psci_set_conduit();
 	cpu_init();
